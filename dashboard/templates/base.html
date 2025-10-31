@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}WBMonitor - Wildberries Seller Analytics{% endblock %}</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    
+    <!-- Litepicker for date ranges -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litepicker/dist/css/litepicker.css">
+    <script src="https://cdn.jsdelivr.net/npm/litepicker/dist/litepicker.js"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+    
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-md">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex">
+                    <div class="flex-shrink-0 flex items-center">
+                        <h1 class="text-xl font-bold text-blue-600">WBMonitor</h1>
+                    </div>
+                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
+                        <a href="{% url 'dashboard:dashboard' %}" class="inline-flex items-center px-1 pt-1 border-b-2 border-transparent text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                            <i data-lucide="layout-dashboard" class="w-4 h-4 mr-2"></i>
+                            Dashboard
+                        </a>
+                        <a href="{% url 'dashboard:reports' %}" class="inline-flex items-center px-1 pt-1 border-b-2 border-transparent text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                            <i data-lucide="file-text" class="w-4 h-4 mr-2"></i>
+                            Reports
+                        </a>
+                        <a href="{% url 'dashboard:alerts' %}" class="inline-flex items-center px-1 pt-1 border-b-2 border-transparent text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                            <i data-lucide="bell" class="w-4 h-4 mr-2"></i>
+                            Alerts
+                        </a>
+                        <a href="{% url 'dashboard:competitors' %}" class="inline-flex items-center px-1 pt-1 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 px-1 pt-1 border-b-2 text-sm font-medium">
+                            <i data-lucide="users" class="w-4 h-4 mr-2"></i>
+                            Competitors
+                        </a>
+                        <a href="{% url 'dashboard:analysis' %}" class="inline-flex items-center px-1 pt-1 border-b-2 border-transparent text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                            <i data-lucide="trending-up" class="w-4 h-4 mr-2"></i>
+                            Analysis
+                        </a>
+                        <a href="{% url 'dashboard:settings' %}" class="inline-flex items-center px-1 pt-1 border-b-2 border-transparent text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                            <i data-lucide="settings" class="w-4 h-4 mr-2"></i>
+                            Settings
+                        </a>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <span class="text-sm text-gray-700 mr-4">{{ user.username }}</span>
+                    <a href="/admin/logout/" class="text-sm text-gray-500 hover:text-gray-700">
+                        <i data-lucide="log-out" class="w-4 h-4"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Messages -->
+    {% if messages %}
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4">
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags }} bg-{{ message.tags|yesno:'green,red' }}-100 border border-{{ message.tags|yesno:'green,red' }}-400 text-{{ message.tags|yesno:'green,red' }}-700 px-4 py-3 rounded mb-2">
+            {{ message }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Initialize Lucide Icons -->
+    <script>
+        lucide.createIcons();
+    </script>
+    
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>
+
