@@ -198,12 +198,12 @@ def add_competitor_view(request):
     
     if not name or not url:
         messages.error(request, "Name and URL are required.")
-        return redirect('competitors')
+        return redirect('dashboard:competitors')
     
     Competitor.objects.create(user=request.user, name=name, url=url)
     messages.success(request, f"Competitor '{name}' added successfully.")
     
-    return redirect('competitors')
+    return redirect('dashboard:competitors')
 
 
 @login_required
@@ -217,7 +217,7 @@ def delete_competitor_view(request, competitor_id):
     except Competitor.DoesNotExist:
         messages.error(request, "Competitor not found.")
     
-    return redirect('competitors')
+    return redirect('dashboard:competitors')
 
 
 @login_required
@@ -299,7 +299,7 @@ def settings_view(request):
         cache.delete(f"dashboard_data_{request.user.id}")
         
         messages.success(request, "Settings saved successfully!")
-        return redirect('settings')
+        return redirect('dashboard:settings')
     
     context = {
         'tokens': tokens,

@@ -2,7 +2,7 @@
 Admin configuration for dashboard models.
 """
 from django.contrib import admin
-from .models import WBToken, Competitor, Settings
+from .models import WBToken, Competitor, Settings, SampleProduct
 
 
 @admin.register(WBToken)
@@ -27,4 +27,13 @@ class SettingsAdmin(admin.ModelAdmin):
     list_filter = ['updated_at']
     search_fields = ['user__username']
     readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(SampleProduct)
+class SampleProductAdmin(admin.ModelAdmin):
+    list_display = ['nmId', 'brand', 'title', 'rating', 'quantity', 'price', 'is_active', 'updated_at']
+    list_filter = ['is_active', 'brand', 'updated_at']
+    search_fields = ['nmId', 'title', 'brand']
+    readonly_fields = ['created_at', 'updated_at']
+    ordering = ['-updated_at']
 

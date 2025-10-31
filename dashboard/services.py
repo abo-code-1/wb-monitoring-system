@@ -1,16 +1,19 @@
 """
 Service layer for fetching and merging Wildberries API data.
 """
+import logging
 import requests
 import pandas as pd
 from typing import Optional, List, Dict, Any
 from django.core.cache import cache
 from django.contrib.auth.models import User
-from dashboard.models import WBToken, Settings
+from dashboard.models import WBToken, Settings, SampleProduct
 from dashboard.utils import (
     safe_float, safe_int, safe_str,
     calculate_stock_status, calculate_cost_percentage, generate_alerts
 )
+
+logger = logging.getLogger(__name__)
 
 
 class WBDataFetcher:
@@ -33,17 +36,17 @@ class WBDataFetcher:
             self.tokens = None
         
         # Base URLs for Wildberries APIs
-        self.content_base_url = "https://suppliers-api.wildberries.ru/content/v1"
+        self.content_base_url = "https://content-api.wildberries.ru/content/v2"
         self.stats_base_url = "https://statistics-api.wildberries.ru/api/v1"
-        self.prices_base_url = "https://suppliers-api.wildberries.ru/public/api/v1"
-        self.analytics_base_url = "https://analytics-api.wildberries.ru/api/v1"
+        self.prices_base_url = "https://common-api.wildberries.ru/api/v1"
+        self.analytics_base_url = "https://seller-analytics-api.wildberries.ru/api/v1"
     
     def _get_headers(self, token: Optional[str]) -> Dict[str, str]:
         """Get headers for API requests."""
         if not token:
             return {}
         return {
-            "Authorization": f"Bearer {token}",
+            "Authorization": token,
             "Content-Type": "application/json"
         }
     
@@ -57,19 +60,19 @@ class WBDataFetcher:
         
         try:
             # Example endpoint - adjust based on actual WB Content API
-            url = f"{self.content_base_url}/cards/list"
+            url = f"{self.content_base_url}/get/cards/list"
             headers = self._get_headers(self.tokens.content_token)
             
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             data = response.json()
             
-            if not data or 'data' not in data:
+            if not data or 'cards' not in data:
                 return pd.DataFrame()
             
             # Transform API response to DataFrame
             rows = []
-            for item in data.get('data', []):
+            for item in data.get('cards', []):
                 # Extract nmId from various possible fields
                 nm_id = item.get('nmID') or item.get('nmId') or item.get('nm_id')
                 if not nm_id:
@@ -88,8 +91,11 @@ class WBDataFetcher:
             
             return pd.DataFrame(rows)
         
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch content data: {type(e).__name__}: {e}")
+            return pd.DataFrame()
         except Exception as e:
-            print(f"Error fetching content data: {e}")
+            logger.error(f"Unexpected error fetching content data: {type(e).__name__}: {e}", exc_info=True)
             return pd.DataFrame()
     
     def fetch_statistics_data(self) -> pd.DataFrame:
@@ -105,7 +111,12 @@ class WBDataFetcher:
             url = f"{self.stats_base_url}/supplier/stocks"
             headers = self._get_headers(self.tokens.stats_token)
             
-            response = requests.get(url, headers=headers, timeout=30)
+            from datetime import datetime
+            params = {
+                'dateFrom': datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+            }
+            
+            response = requests.get(url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             
@@ -129,8 +140,11 @@ class WBDataFetcher:
             
             return pd.DataFrame(rows)
         
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch statistics data: {type(e).__name__}: {e}")
+            return pd.DataFrame()
         except Exception as e:
-            print(f"Error fetching statistics data: {e}")
+            logger.error(f"Unexpected error fetching statistics data: {type(e).__name__}: {e}", exc_info=True)
             return pd.DataFrame()
     
     def fetch_prices_data(self) -> pd.DataFrame:
@@ -173,8 +187,11 @@ class WBDataFetcher:
             
             return pd.DataFrame(rows)
         
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch prices data: {type(e).__name__}: {e}")
+            return pd.DataFrame()
         except Exception as e:
-            print(f"Error fetching prices data: {e}")
+            logger.error(f"Unexpected error fetching prices data: {type(e).__name__}: {e}", exc_info=True)
             return pd.DataFrame()
     
     def fetch_analytics_data(self) -> pd.DataFrame:
@@ -187,10 +204,19 @@ class WBDataFetcher:
         
         try:
             # Example endpoint - adjust based on actual WB Analytics API
-            url = f"{self.analytics_base_url}/nm/incomes"
+            url = f"{self.analytics_base_url}/paid_storage"
             headers = self._get_headers(self.tokens.analytics_token)
             
-            response = requests.get(url, headers=headers, timeout=30)
+            from datetime import datetime, timedelta
+            date_to = datetime.now()
+            date_from = date_to - timedelta(days=7)
+            
+            params = {
+                'dateFrom': date_from.strftime('%Y-%m-%d'),
+                'dateTo': date_to.strftime('%Y-%m-%d'),
+            }
+            
+            response = requests.get(url, headers=headers, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             
@@ -204,7 +230,7 @@ class WBDataFetcher:
                 if not nm_id:
                     continue
                 
-                storage_cost = item.get('storageCost') or item.get('storage_cost') or item.get('cost')
+                storage_cost = item.get('storageCost') or item.get('storage_cost') or item.get('cost') or item.get('total')
                 
                 rows.append({
                     'nmId': int(nm_id),
@@ -216,8 +242,11 @@ class WBDataFetcher:
             
             return pd.DataFrame(rows)
         
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to fetch analytics data: {type(e).__name__}: {e}")
+            return pd.DataFrame()
         except Exception as e:
-            print(f"Error fetching analytics data: {e}")
+            logger.error(f"Unexpected error fetching analytics data: {type(e).__name__}: {e}", exc_info=True)
             return pd.DataFrame()
     
     def fetch_and_merge_all(self) -> pd.DataFrame:
@@ -273,13 +302,28 @@ class WBDataFetcher:
             merged_df['storage_cost'] = None
         
         # Fill missing values with defaults
-        merged_df['quantity'] = merged_df['quantity'].fillna(0).astype(int, errors='ignore')
-        merged_df['price'] = merged_df['price'].fillna(None)
-        merged_df['storage_cost'] = merged_df['storage_cost'].fillna(None)
-        merged_df['title'] = merged_df['title'].fillna('N/A')
-        merged_df['brand'] = merged_df['brand'].fillna('N/A')
-        merged_df['rating'] = merged_df['rating'].fillna(None)
-        merged_df['feedbacks'] = merged_df['feedbacks'].fillna(0).astype(int, errors='ignore')
+        if 'quantity' in merged_df.columns:
+            merged_df['quantity'] = merged_df['quantity'].fillna(0)
+            merged_df['quantity'] = pd.to_numeric(merged_df['quantity'], errors='coerce').fillna(0).astype(int)
+        
+        if 'price' in merged_df.columns:
+            merged_df['price'] = merged_df['price'].fillna(0)
+        
+        if 'storage_cost' in merged_df.columns:
+            merged_df['storage_cost'] = merged_df['storage_cost'].fillna(0)
+        
+        if 'title' in merged_df.columns:
+            merged_df['title'] = merged_df['title'].fillna('N/A')
+        
+        if 'brand' in merged_df.columns:
+            merged_df['brand'] = merged_df['brand'].fillna('N/A')
+        
+        if 'rating' in merged_df.columns:
+            merged_df['rating'] = merged_df['rating'].fillna(0)
+        
+        if 'feedbacks' in merged_df.columns:
+            merged_df['feedbacks'] = merged_df['feedbacks'].fillna(0)
+            merged_df['feedbacks'] = pd.to_numeric(merged_df['feedbacks'], errors='coerce').fillna(0).astype(int)
         
         # Get user settings for thresholds
         try:
@@ -312,6 +356,72 @@ class WBDataFetcher:
         
         return merged_df
 
+    def get_sample_data(self) -> pd.DataFrame:
+        """
+        Get sample data from database as fallback when APIs are unavailable.
+        Returns DataFrame with same structure as fetch_and_merge_all().
+        """
+        try:
+            sample_products = SampleProduct.objects.filter(is_active=True)
+            
+            if not sample_products.exists():
+                logger.info("No sample products found in database. Use 'python manage.py populate_sample_data' to create sample data.")
+                return pd.DataFrame()
+            
+            rows = []
+            for product in sample_products:
+                rows.append({
+                    'nmId': product.nmId,
+                    'title': product.title,
+                    'brand': product.brand,
+                    'rating': float(product.rating) if product.rating is not None else None,
+                    'feedbacks': product.feedbacks,
+                    'quantity': product.quantity,
+                    'price': float(product.price) if product.price is not None else None,
+                    'storage_cost': float(product.storage_cost) if product.storage_cost is not None else None,
+                })
+            
+            if not rows:
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(rows)
+            
+            # Get user settings for thresholds
+            try:
+                settings = Settings.objects.get(user=self.user)
+                low_stock_threshold = settings.low_stock_threshold
+                low_rating_threshold = settings.low_rating_threshold
+            except Settings.DoesNotExist:
+                low_stock_threshold = 10
+                low_rating_threshold = 4.0
+            
+            # Calculate derived fields (same as in fetch_and_merge_all)
+            df['stock_status'] = df['quantity'].apply(
+                lambda q: calculate_stock_status(q, low_stock_threshold)
+            )
+            
+            df['cost_percentage'] = df.apply(
+                lambda row: calculate_cost_percentage(row.get('price'), row.get('storage_cost')),
+                axis=1
+            )
+            
+            df['alerts'] = df.apply(
+                lambda row: generate_alerts(
+                    row.get('rating'),
+                    row.get('quantity'),
+                    low_rating_threshold,
+                    low_stock_threshold
+                ),
+                axis=1
+            )
+            
+            logger.info(f"Using {len(df)} sample products from database (APIs unavailable or returned empty data)")
+            return df
+        
+        except Exception as e:
+            logger.error(f"Error getting sample data: {type(e).__name__}: {e}", exc_info=True)
+            return pd.DataFrame()
+
 
 def get_dashboard_data(user: User) -> List[Dict[str, Any]]:
     """
@@ -336,6 +446,11 @@ def get_dashboard_data(user: User) -> List[Dict[str, Any]]:
     fetcher = WBDataFetcher(user)
     merged_df = fetcher.fetch_and_merge_all()
     
+    # If API calls failed or returned empty data, use sample data as fallback
+    if merged_df.empty:
+        logger.info("API data is empty, attempting to use sample data as fallback")
+        merged_df = fetcher.get_sample_data()
+    
     if merged_df.empty:
         return []
     
@@ -346,4 +461,3 @@ def get_dashboard_data(user: User) -> List[Dict[str, Any]]:
     cache.set(cache_key, data_list, 900)
     
     return data_list
-
