@@ -1,463 +1,392 @@
 """
-Service layer for fetching and merging Wildberries API data.
+Service layer for business intelligence and alerts.
 """
 import logging
-import requests
-import pandas as pd
 from typing import Optional, List, Dict, Any
-from django.core.cache import cache
 from django.contrib.auth.models import User
-from dashboard.models import WBToken, Settings, SampleProduct
-from dashboard.utils import (
-    safe_float, safe_int, safe_str,
-    calculate_stock_status, calculate_cost_percentage, generate_alerts
-)
+from django.utils import timezone
+from django.db import models
+from .models import Product, BusinessAlert, Settings, AIAdvice
+from .ai_service import generate_advice_via_gemini, determine_advice_type, determine_priority
 
 logger = logging.getLogger(__name__)
 
 
-class WBDataFetcher:
+def generate_business_alerts(user: User) -> int:
     """
-    Central class for fetching data from all four Wildberries APIs.
-    Each method returns a clean Pandas DataFrame or empty DataFrame if API fails.
-    """
-    
-    def __init__(self, user: User):
-        """
-        Initialize fetcher with user's API tokens.
-        
-        Args:
-            user: Django User instance
-        """
-        self.user = user
-        try:
-            self.tokens = WBToken.objects.get(user=user)
-        except WBToken.DoesNotExist:
-            self.tokens = None
-        
-        # Base URLs for Wildberries APIs
-        self.content_base_url = "https://content-api.wildberries.ru/content/v2"
-        self.stats_base_url = "https://statistics-api.wildberries.ru/api/v1"
-        self.prices_base_url = "https://common-api.wildberries.ru/api/v1"
-        self.analytics_base_url = "https://seller-analytics-api.wildberries.ru/api/v1"
-    
-    def _get_headers(self, token: Optional[str]) -> Dict[str, str]:
-        """Get headers for API requests."""
-        if not token:
-            return {}
-        return {
-            "Authorization": token,
-            "Content-Type": "application/json"
-        }
-    
-    def fetch_content_data(self) -> pd.DataFrame:
-        """
-        Fetch product content data (titles, brands, ratings, feedbacks).
-        Returns DataFrame with columns: ['nmId', 'title', 'brand', 'rating', 'feedbacks']
-        """
-        if not self.tokens or not self.tokens.content_token:
-            return pd.DataFrame()
-        
-        try:
-            # Example endpoint - adjust based on actual WB Content API
-            url = f"{self.content_base_url}/get/cards/list"
-            headers = self._get_headers(self.tokens.content_token)
-            
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data or 'cards' not in data:
-                return pd.DataFrame()
-            
-            # Transform API response to DataFrame
-            rows = []
-            for item in data.get('cards', []):
-                # Extract nmId from various possible fields
-                nm_id = item.get('nmID') or item.get('nmId') or item.get('nm_id')
-                if not nm_id:
-                    continue
-                
-                rows.append({
-                    'nmId': int(nm_id),
-                    'title': safe_str(item.get('title'), 'N/A'),
-                    'brand': safe_str(item.get('brand'), 'N/A'),
-                    'rating': safe_float(item.get('rating'), None),
-                    'feedbacks': safe_int(item.get('feedbacksCount') or item.get('feedbacks'), 0),
-                })
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            return pd.DataFrame(rows)
-        
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Failed to fetch content data: {type(e).__name__}: {e}")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Unexpected error fetching content data: {type(e).__name__}: {e}", exc_info=True)
-            return pd.DataFrame()
-    
-    def fetch_statistics_data(self) -> pd.DataFrame:
-        """
-        Fetch real-time stock statistics.
-        Returns DataFrame with columns: ['nmId', 'quantity']
-        """
-        if not self.tokens or not self.tokens.stats_token:
-            return pd.DataFrame()
-        
-        try:
-            # Example endpoint - adjust based on actual WB Statistics API
-            url = f"{self.stats_base_url}/supplier/stocks"
-            headers = self._get_headers(self.tokens.stats_token)
-            
-            from datetime import datetime
-            params = {
-                'dateFrom': datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
-            }
-            
-            response = requests.get(url, headers=headers, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data or not isinstance(data, list):
-                return pd.DataFrame()
-            
-            # Transform API response to DataFrame
-            rows = []
-            for item in data:
-                nm_id = item.get('nmID') or item.get('nmId') or item.get('nm_id')
-                if not nm_id:
-                    continue
-                
-                rows.append({
-                    'nmId': int(nm_id),
-                    'quantity': safe_int(item.get('quantity') or item.get('qty'), 0),
-                })
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            return pd.DataFrame(rows)
-        
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Failed to fetch statistics data: {type(e).__name__}: {e}")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Unexpected error fetching statistics data: {type(e).__name__}: {e}", exc_info=True)
-            return pd.DataFrame()
-    
-    def fetch_prices_data(self) -> pd.DataFrame:
-        """
-        Fetch prices and discounts.
-        Returns DataFrame with columns: ['nmId', 'price']
-        """
-        if not self.tokens or not self.tokens.prices_token:
-            return pd.DataFrame()
-        
-        try:
-            # Example endpoint - adjust based on actual WB Prices API
-            url = f"{self.prices_base_url}/info"
-            headers = self._get_headers(self.tokens.prices_token)
-            
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data or not isinstance(data, list):
-                return pd.DataFrame()
-            
-            # Transform API response to DataFrame
-            rows = []
-            for item in data:
-                nm_id = item.get('nmID') or item.get('nmId') or item.get('nm_id')
-                if not nm_id:
-                    continue
-                
-                # Extract price from various possible fields
-                price = item.get('price') or item.get('salePrice') or item.get('sale_price')
-                
-                rows.append({
-                    'nmId': int(nm_id),
-                    'price': safe_float(price, None),
-                })
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            return pd.DataFrame(rows)
-        
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Failed to fetch prices data: {type(e).__name__}: {e}")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Unexpected error fetching prices data: {type(e).__name__}: {e}", exc_info=True)
-            return pd.DataFrame()
-    
-    def fetch_analytics_data(self) -> pd.DataFrame:
-        """
-        Fetch storage costs from Analytics API (optional).
-        Returns DataFrame with columns: ['nmId', 'storage_cost']
-        """
-        if not self.tokens or not self.tokens.analytics_token:
-            return pd.DataFrame()
-        
-        try:
-            # Example endpoint - adjust based on actual WB Analytics API
-            url = f"{self.analytics_base_url}/paid_storage"
-            headers = self._get_headers(self.tokens.analytics_token)
-            
-            from datetime import datetime, timedelta
-            date_to = datetime.now()
-            date_from = date_to - timedelta(days=7)
-            
-            params = {
-                'dateFrom': date_from.strftime('%Y-%m-%d'),
-                'dateTo': date_to.strftime('%Y-%m-%d'),
-            }
-            
-            response = requests.get(url, headers=headers, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data or not isinstance(data, list):
-                return pd.DataFrame()
-            
-            # Transform API response to DataFrame
-            rows = []
-            for item in data:
-                nm_id = item.get('nmID') or item.get('nmId') or item.get('nm_id')
-                if not nm_id:
-                    continue
-                
-                storage_cost = item.get('storageCost') or item.get('storage_cost') or item.get('cost') or item.get('total')
-                
-                rows.append({
-                    'nmId': int(nm_id),
-                    'storage_cost': safe_float(storage_cost, None),
-                })
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            return pd.DataFrame(rows)
-        
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Failed to fetch analytics data: {type(e).__name__}: {e}")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Unexpected error fetching analytics data: {type(e).__name__}: {e}", exc_info=True)
-            return pd.DataFrame()
-    
-    def fetch_and_merge_all(self) -> pd.DataFrame:
-        """
-        Fetch from all four APIs and merge into one unified DataFrame.
-        Returns DataFrame with columns: ['nmId', 'title', 'brand', 'rating', 'feedbacks',
-                                         'quantity', 'price', 'storage_cost', 'stock_status',
-                                         'cost_percentage', 'alerts']
-        """
-        # Fetch from all APIs in parallel (or sequentially)
-        content_df = self.fetch_content_data()
-        stats_df = self.fetch_statistics_data()
-        prices_df = self.fetch_prices_data()
-        analytics_df = self.fetch_analytics_data()
-        
-        # Start with content data as base (or stats if content is empty)
-        if not content_df.empty:
-            merged_df = content_df.copy()
-        elif not stats_df.empty:
-            merged_df = stats_df[['nmId']].copy()
-            merged_df['title'] = 'N/A'
-            merged_df['brand'] = 'N/A'
-            merged_df['rating'] = None
-            merged_df['feedbacks'] = 0
-        elif not prices_df.empty:
-            merged_df = prices_df[['nmId']].copy()
-            merged_df['title'] = 'N/A'
-            merged_df['brand'] = 'N/A'
-            merged_df['rating'] = None
-            merged_df['feedbacks'] = 0
-        else:
-            # No data from any API
-            return pd.DataFrame(columns=['nmId', 'title', 'brand', 'rating', 'feedbacks',
-                                        'quantity', 'price', 'storage_cost', 'stock_status',
-                                        'cost_percentage', 'alerts'])
-        
-        # Merge statistics (quantity)
-        if not stats_df.empty:
-            merged_df = merged_df.merge(stats_df[['nmId', 'quantity']], on='nmId', how='left')
-        else:
-            merged_df['quantity'] = None
-        
-        # Merge prices
-        if not prices_df.empty:
-            merged_df = merged_df.merge(prices_df[['nmId', 'price']], on='nmId', how='left')
-        else:
-            merged_df['price'] = None
-        
-        # Merge analytics (storage_cost)
-        if not analytics_df.empty:
-            merged_df = merged_df.merge(analytics_df[['nmId', 'storage_cost']], on='nmId', how='left')
-        else:
-            merged_df['storage_cost'] = None
-        
-        # Fill missing values with defaults
-        if 'quantity' in merged_df.columns:
-            merged_df['quantity'] = merged_df['quantity'].fillna(0)
-            merged_df['quantity'] = pd.to_numeric(merged_df['quantity'], errors='coerce').fillna(0).astype(int)
-        
-        if 'price' in merged_df.columns:
-            merged_df['price'] = merged_df['price'].fillna(0)
-        
-        if 'storage_cost' in merged_df.columns:
-            merged_df['storage_cost'] = merged_df['storage_cost'].fillna(0)
-        
-        if 'title' in merged_df.columns:
-            merged_df['title'] = merged_df['title'].fillna('N/A')
-        
-        if 'brand' in merged_df.columns:
-            merged_df['brand'] = merged_df['brand'].fillna('N/A')
-        
-        if 'rating' in merged_df.columns:
-            merged_df['rating'] = merged_df['rating'].fillna(0)
-        
-        if 'feedbacks' in merged_df.columns:
-            merged_df['feedbacks'] = merged_df['feedbacks'].fillna(0)
-            merged_df['feedbacks'] = pd.to_numeric(merged_df['feedbacks'], errors='coerce').fillna(0).astype(int)
-        
-        # Get user settings for thresholds
-        try:
-            settings = Settings.objects.get(user=self.user)
-            low_stock_threshold = settings.low_stock_threshold
-            low_rating_threshold = settings.low_rating_threshold
-        except Settings.DoesNotExist:
-            low_stock_threshold = 10
-            low_rating_threshold = 4.0
-        
-        # Calculate derived fields
-        merged_df['stock_status'] = merged_df['quantity'].apply(
-            lambda q: calculate_stock_status(q, low_stock_threshold)
-        )
-        
-        merged_df['cost_percentage'] = merged_df.apply(
-            lambda row: calculate_cost_percentage(row.get('price'), row.get('storage_cost')),
-            axis=1
-        )
-        
-        merged_df['alerts'] = merged_df.apply(
-            lambda row: generate_alerts(
-                row.get('rating'),
-                row.get('quantity'),
-                low_rating_threshold,
-                low_stock_threshold
-            ),
-            axis=1
-        )
-        
-        return merged_df
-
-    def get_sample_data(self) -> pd.DataFrame:
-        """
-        Get sample data from database as fallback when APIs are unavailable.
-        Returns DataFrame with same structure as fetch_and_merge_all().
-        """
-        try:
-            sample_products = SampleProduct.objects.filter(is_active=True)
-            
-            if not sample_products.exists():
-                logger.info("No sample products found in database. Use 'python manage.py populate_sample_data' to create sample data.")
-                return pd.DataFrame()
-            
-            rows = []
-            for product in sample_products:
-                rows.append({
-                    'nmId': product.nmId,
-                    'title': product.title,
-                    'brand': product.brand,
-                    'rating': float(product.rating) if product.rating is not None else None,
-                    'feedbacks': product.feedbacks,
-                    'quantity': product.quantity,
-                    'price': float(product.price) if product.price is not None else None,
-                    'storage_cost': float(product.storage_cost) if product.storage_cost is not None else None,
-                })
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            df = pd.DataFrame(rows)
-            
-            # Get user settings for thresholds
-            try:
-                settings = Settings.objects.get(user=self.user)
-                low_stock_threshold = settings.low_stock_threshold
-                low_rating_threshold = settings.low_rating_threshold
-            except Settings.DoesNotExist:
-                low_stock_threshold = 10
-                low_rating_threshold = 4.0
-            
-            # Calculate derived fields (same as in fetch_and_merge_all)
-            df['stock_status'] = df['quantity'].apply(
-                lambda q: calculate_stock_status(q, low_stock_threshold)
-            )
-            
-            df['cost_percentage'] = df.apply(
-                lambda row: calculate_cost_percentage(row.get('price'), row.get('storage_cost')),
-                axis=1
-            )
-            
-            df['alerts'] = df.apply(
-                lambda row: generate_alerts(
-                    row.get('rating'),
-                    row.get('quantity'),
-                    low_rating_threshold,
-                    low_stock_threshold
-                ),
-                axis=1
-            )
-            
-            logger.info(f"Using {len(df)} sample products from database (APIs unavailable or returned empty data)")
-            return df
-        
-        except Exception as e:
-            logger.error(f"Error getting sample data: {type(e).__name__}: {e}", exc_info=True)
-            return pd.DataFrame()
-
-
-def get_dashboard_data(user: User) -> List[Dict[str, Any]]:
-    """
-    Get dashboard data with caching (15-minute TTL).
-    Checks cache first, if empty calls WBDataFetcher, merges datasets,
-    caches for 15 minutes, and returns list of dicts.
+    Generate business alerts for all user's products.
     
     Args:
         user: Django User instance
     
     Returns:
-        List of dictionaries, each representing a product
+        Number of alerts generated
     """
-    cache_key = f"dashboard_data_{user.id}"
+    try:
+        settings = Settings.objects.get(user=user)
+    except Settings.DoesNotExist:
+        settings = Settings.objects.create(user=user)
     
-    # Try to get from cache
-    cached_data = cache.get(cache_key)
-    if cached_data is not None:
-        return cached_data
+    products = Product.objects.filter(user=user, is_active=True)
+    alerts_generated = 0
     
-    # Cache miss - fetch fresh data
-    fetcher = WBDataFetcher(user)
-    merged_df = fetcher.fetch_and_merge_all()
+    # Calculate max values for impact score calculation
+    max_price = 0
+    if products.exists():
+        max_price_result = products.aggregate(max_price=models.Max('price'))
+        max_price = float(max_price_result['max_price'] or 0)
     
-    # If API calls failed or returned empty data, use sample data as fallback
-    if merged_df.empty:
-        logger.info("API data is empty, attempting to use sample data as fallback")
-        merged_df = fetcher.get_sample_data()
+    for product in products:
+        alerts_created = []
+        
+        # OUT OF STOCK Alert
+        if product.quantity == 0:
+            impact_score = calculate_impact_score(product, max_price, severity_multiplier=1.5)
+            estimated_loss = calculate_estimated_loss(product)
+            
+            alert = BusinessAlert.objects.update_or_create(
+                user=user,
+                product=product,
+                alert_type='OUT_OF_STOCK',
+                defaults={
+                    'severity': determine_severity(product),
+                    'message': f'Product "{product.title}" is out of stock. Potential loss: {estimated_loss:.0f} RUB',
+                    'impact_score': impact_score,
+                    'estimated_loss': estimated_loss,
+                    'is_active': True,
+                    'resolved_at': None,
+                }
+            )[0]
+            alerts_created.append(alert)
+        
+        # LOW STOCK Alert
+        elif product.quantity < settings.low_stock_threshold:
+            days_of_stock = product.days_of_stock
+            impact_score = calculate_impact_score(product, max_price)
+            estimated_loss = calculate_estimated_loss(product)
+            
+            alert = BusinessAlert.objects.update_or_create(
+                user=user,
+                product=product,
+                alert_type='LOW_STOCK',
+                defaults={
+                    'severity': determine_severity(product),
+                    'message': f'Low stock: {product.quantity} units remaining (~{days_of_stock} days)',
+                    'impact_score': impact_score,
+                    'estimated_loss': estimated_loss,
+                    'is_active': True,
+                    'resolved_at': None,
+                }
+            )[0]
+            alerts_created.append(alert)
+        
+        # LOW RATING Alert
+        if float(product.rating) < settings.low_rating_threshold:
+            impact_score = calculate_impact_score(product, max_price)
+            estimated_loss = calculate_estimated_loss(product, rating_penalty=True)
+            
+            alert = BusinessAlert.objects.update_or_create(
+                user=user,
+                product=product,
+                alert_type='LOW_RATING',
+                defaults={
+                    'severity': determine_severity(product),
+                    'message': f'Low rating: {product.rating:.1f}/5.0 (threshold: {settings.low_rating_threshold:.1f})',
+                    'impact_score': impact_score,
+                    'estimated_loss': estimated_loss,
+                    'is_active': True,
+                    'resolved_at': None,
+                }
+            )[0]
+            alerts_created.append(alert)
+        
+        # DEAD STOCK Alert
+        if product.sales_30d == 0 and product.quantity > 0:
+            impact_score = product.quantity * 5  # Arbitrary scoring
+            estimated_loss = float(product.price) * product.quantity * 0.1  # 10% of inventory value
+            
+            alert = BusinessAlert.objects.update_or_create(
+                user=user,
+                product=product,
+                alert_type='DEAD_STOCK',
+                defaults={
+                    'severity': 'MEDIUM',
+                    'message': f'Dead stock: Zero sales in 30 days with {product.quantity} units in inventory',
+                    'impact_score': impact_score,
+                    'estimated_loss': estimated_loss,
+                    'is_active': True,
+                    'resolved_at': None,
+                }
+            )[0]
+            alerts_created.append(alert)
+        
+        # Deactivate alerts that are no longer relevant
+        active_alerts = BusinessAlert.objects.filter(
+            user=user,
+            product=product,
+            is_active=True
+        )
+        
+        for existing_alert in active_alerts:
+            if existing_alert not in alerts_created:
+                # Check if condition still exists
+                if existing_alert.alert_type == 'OUT_OF_STOCK' and product.quantity > 0:
+                    existing_alert.is_active = False
+                    existing_alert.resolved_at = timezone.now()
+                    existing_alert.save()
+                elif existing_alert.alert_type == 'LOW_STOCK' and product.quantity >= settings.low_stock_threshold:
+                    existing_alert.is_active = False
+                    existing_alert.resolved_at = timezone.now()
+                    existing_alert.save()
+                elif existing_alert.alert_type == 'LOW_RATING' and product.rating >= settings.low_rating_threshold:
+                    existing_alert.is_active = False
+                    existing_alert.resolved_at = timezone.now()
+                    existing_alert.save()
+        
+        alerts_generated += len(alerts_created)
     
-    if merged_df.empty:
-        return []
+    logger.info(f"Generated {alerts_generated} business alerts for user {user.username}")
+    return alerts_generated
+
+
+def calculate_impact_score(product: Product, max_price: float, severity_multiplier: float = 1.0) -> float:
+    """
+    Calculate impact score for a product based on sales, rating, and price.
     
-    # Convert DataFrame to list of dicts
-    data_list = merged_df.to_dict('records')
+    Args:
+        product: Product instance
+        max_price: Maximum price across all products
+        severity_multiplier: Multiplier for severity adjustment
     
-    # Cache for 15 minutes (900 seconds)
-    cache.set(cache_key, data_list, 900)
+    Returns:
+        Impact score (0-100)
+    """
+    from django.db import models
     
-    return data_list
+    sales_factor = min(float(product.sales_30d) / 200.0, 1.0)  # Normalize to 0-1
+    rating_factor = float(product.rating) / 5.0  # Normalize to 0-1
+    price_factor = float(product.price) / max(1, max_price)  # Normalize to 0-1
+    
+    score = (sales_factor * 50 + rating_factor * 30 + price_factor * 20) * severity_multiplier
+    return round(score, 2)
+
+
+def calculate_estimated_loss(product: Product, rating_penalty: bool = False) -> float:
+    """
+    Calculate estimated financial loss for a product.
+    
+    Args:
+        product: Product instance
+        rating_penalty: Whether to include rating-based penalty
+    
+    Returns:
+        Estimated loss in RUB
+    """
+    avg_daily_sales = product.sales_7d / 7.0 if product.sales_7d > 0 else 0
+    
+    if product.quantity == 0 and avg_daily_sales > 0:
+        # Estimate loss based on lost sales days
+        missing_days = 7  # Assume 7 days of missed sales
+        lost_revenue = avg_daily_sales * float(product.price) * missing_days
+        return round(lost_revenue, 2)
+    
+    elif rating_penalty and float(product.rating) < 4.0:
+        # Estimate loss from low rating
+        penalty_factor = (4.0 - float(product.rating)) / 1.0  # 0-1 penalty
+        estimated_loss = float(product.sales_30d) * float(product.price) * penalty_factor * 0.1
+        return round(estimated_loss, 2)
+    
+    return 0.0
+
+
+def determine_severity(product: Product) -> str:
+    """
+    Determine alert severity based on product metrics.
+    
+    Args:
+        product: Product instance
+    
+    Returns:
+        Severity level string
+    """
+    # Critical: Out of stock with high sales
+    if product.quantity == 0 and product.sales_30d > 50:
+        return 'CRITICAL'
+    
+    # High: Low stock with high sales
+    if product.quantity < 5 and product.sales_30d > 30:
+        return 'HIGH'
+    
+    # High: Very low rating with good sales
+    if float(product.rating) < 3.0 and product.sales_30d > 20:
+        return 'HIGH'
+    
+    # Medium: Low stock or low rating with moderate sales
+    if (product.quantity < 10 or float(product.rating) < 4.0) and product.sales_30d > 10:
+        return 'MEDIUM'
+    
+    # Low: Low stock or low rating but minimal sales
+    return 'LOW'
+
+
+def diagnose_sales_drop(product: Product) -> Optional[str]:
+    """
+    Diagnose the cause of sales drop by comparing snapshots.
+    
+    Args:
+        product: Product instance
+    
+    Returns:
+        Diagnosis text or None
+    """
+    from django.utils import timezone
+    from .models import ProductSnapshot
+    
+    # Get last 2 snapshots
+    snapshots = ProductSnapshot.objects.filter(
+        product=product
+    ).order_by('-snapshot_at')[:2]
+    
+    if len(snapshots) < 2:
+        return None
+    
+    latest = snapshots[0]
+    previous = snapshots[1]
+    
+    # Check if sales dropped significantly
+    if latest.sales_7d < previous.sales_7d * 0.6:
+        # Find the cause
+        if latest.quantity < previous.quantity:
+            return "Stock levels decreased significantly"
+        elif latest.rating < previous.rating - 0.2:
+            return "Bad reviews causing rating decline"
+        elif latest.price > previous.price * 1.05:
+            return "Price increase made product less competitive"
+        else:
+            return "Sales declining due to unknown factors"
+    
+    return None
+
+
+def generate_ai_advice(user: User) -> int:
+    """
+    Generate AI advice for top priority alerts.
+    
+    Args:
+        user: Django User instance
+    
+    Returns:
+        Number of AI advice entries generated
+    """
+    # Get top 20 highest priority active alerts
+    top_alerts = BusinessAlert.objects.filter(
+        user=user,
+        is_active=True
+    ).order_by('-impact_score', '-severity')[:20]
+    
+    advice_generated = 0
+    
+    for alert in top_alerts:
+        try:
+            # Check if advice already exists for this alert
+            existing = AIAdvice.objects.filter(
+                user=user,
+                alert=alert,
+                status__in=['NEW', 'SHOWN']
+            ).first()
+            
+            if existing:
+                continue  # Skip if advice already exists
+            
+            # Generate advice via Gemini
+            advice_text = generate_advice_via_gemini(alert.product, [alert])
+            advice_type = determine_advice_type(alert.product, [alert])
+            priority = determine_priority(alert.product, [alert])
+            
+            # Create AI advice entry
+            AIAdvice.objects.create(
+                user=user,
+                product=alert.product,
+                alert=alert,
+                advice_type=advice_type,
+                advice_text=advice_text,
+                priority=priority,
+                status='NEW',
+            )
+            
+            advice_generated += 1
+            
+        except Exception as e:
+            logger.error(f"Error generating AI advice for alert {alert.id}: {e}")
+            continue
+    
+    logger.info(f"Generated {advice_generated} AI advice entries for user {user.username}")
+    return advice_generated
+
+
+def get_products_data(user: User) -> List[Dict[str, Any]]:
+    """
+    Get all products data for dashboard display.
+    
+    Args:
+        user: Django User instance
+    
+    Returns:
+        List of product dictionaries
+    """
+    from .utils import calculate_stock_status, generate_alerts
+    
+    products = Product.objects.filter(user=user, is_active=True)
+    
+    # Get user settings for calculations
+    try:
+        settings = Settings.objects.get(user=user)
+        low_stock_threshold = settings.low_stock_threshold
+        low_rating_threshold = settings.low_rating_threshold
+    except Settings.DoesNotExist:
+        low_stock_threshold = 10
+        low_rating_threshold = 4.0
+    
+    data = []
+    for product in products:
+        stock_status = calculate_stock_status(product.quantity, low_stock_threshold)
+        alerts = generate_alerts(
+            float(product.rating),
+            product.quantity,
+            low_rating_threshold,
+            low_stock_threshold
+        )
+        
+        data.append({
+            'nm_id': product.nm_id,
+            'nmId': product.nm_id,  # Also include for backward compatibility
+            'title': product.title,
+            'brand': product.brand,
+            'category': product.category,
+            'price': float(product.price),
+            'rating': float(product.rating),
+            'feedbacks': product.feedbacks,
+            'quantity': product.quantity,
+            'sales_7d': product.sales_7d,
+            'sales_30d': product.sales_30d,
+            'storage_cost': float(product.storage_cost) if product.storage_cost else None,
+            'days_of_stock': product.days_of_stock,
+            'is_sample': product.is_sample,
+            'stock_status': stock_status,
+            'alerts': alerts,
+        })
+    
+    return data
+
+
+def get_dashboard_data(user: User) -> List[Dict[str, Any]]:
+    """
+    Get dashboard data (alias for get_products_data for backward compatibility).
+    
+    Args:
+        user: Django User instance
+    
+    Returns:
+        List of product dictionaries
+    """
+    return get_products_data(user)

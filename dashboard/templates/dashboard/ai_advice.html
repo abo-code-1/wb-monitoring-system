@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+
+{% block title %}AI Advice - WBMonitor{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex justify-between items-center">
+    <div>
+        <h2 class="text-2xl font-bold text-gray-900">
+            <i data-lucide="sparkles" class="w-6 h-6 inline-block mr-2 text-purple-600"></i>
+            AI-Powered Business Advice
+        </h2>
+        <p class="text-gray-600 mt-1">{{ total_advice }} AI recommendations to improve your sales</p>
+    </div>
+    <a href="{% url 'dashboard:refresh' %}" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700">
+        <i data-lucide="refresh-cw" class="w-4 h-4 mr-2"></i>
+        Generate New Advice
+    </a>
+</div>
+
+<!-- Advice Cards -->
+<div class="grid grid-cols-1 gap-6">
+    {% for advice in advice_list %}
+    <div class="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg shadow-md border border-purple-200 hover:shadow-lg transition-shadow overflow-hidden">
+        <div class="p-6">
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-4">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="w-12 h-12 bg-gradient-to-br from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
+                            <i data-lucide="sparkles" class="w-6 h-6 text-white"></i>
+                        </div>
+                    </div>
+                    <div class="ml-4">
+                        <h3 class="text-lg font-semibold text-gray-900">{{ advice.product.title }}</h3>
+                        <div class="flex items-center gap-3 mt-1">
+                            <span class="text-xs text-gray-500">nmId: {{ advice.product.nm_id }}</span>
+                            <span class="px-2 py-0.5 text-xs rounded-full font-medium
+                                {% if advice.advice_type == 'RESTOCK' %}bg-red-100 text-red-800
+                                {% elif advice.advice_type == 'CHANGE_PRICE' %}bg-green-100 text-green-800
+                                {% elif advice.advice_type == 'FIX_RATING' %}bg-orange-100 text-orange-800
+                                {% elif advice.advice_type == 'IMPROVE_LISTING' %}bg-blue-100 text-blue-800
+                                {% else %}bg-purple-100 text-purple-800{% endif %}">
+                                {{ advice.get_advice_type_display }}
+                            </span>
+                            <span class="text-xs text-gray-500">{{ advice.created_at|date:"M d, Y" }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <div class="flex items-center mr-4">
+                        <span class="text-xs font-medium text-gray-500 mr-2">Priority</span>
+                        <div class="flex">
+                            {% for i in "12345"|make_list %}
+                                {% if forloop.counter <= advice.priority %}
+                                <i data-lucide="star" class="w-4 h-4 text-yellow-400 fill-current"></i>
+                                {% else %}
+                                <i data-lucide="star" class="w-4 h-4 text-gray-300"></i>
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <span class="px-3 py-1 text-xs font-medium rounded-full
+                        {% if advice.status == 'NEW' %}bg-blue-100 text-blue-800 border border-blue-200
+                        {% elif advice.status == 'SHOWN' %}bg-yellow-100 text-yellow-800 border border-yellow-200
+                        {% elif advice.status == 'APPLIED' %}bg-green-100 text-green-800 border border-green-200
+                        {% else %}bg-gray-100 text-gray-800 border border-gray-200{% endif %}">
+                        {{ advice.get_status_display }}
+                    </span>
+                </div>
+            </div>
+
+            <!-- Product Metrics -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 p-4 bg-white rounded-lg border border-gray-200">
+                <div class="text-center">
+                    <p class="text-xs text-gray-500 mb-1">Rating</p>
+                    <p class="text-lg font-bold text-gray-900 flex items-center justify-center">
+                        <i data-lucide="star" class="w-4 h-4 text-yellow-400 mr-1"></i>
+                        {{ advice.product.rating|floatformat:1 }}
+                    </p>
+                </div>
+                <div class="text-center">
+                    <p class="text-xs text-gray-500 mb-1">Stock</p>
+                    <p class="text-lg font-bold {% if advice.product.quantity == 0 %}text-red-600{% elif advice.product.quantity < 10 %}text-yellow-600{% else %}text-green-600{% endif %}">
+                        {{ advice.product.quantity }}
+                    </p>
+                </div>
+                <div class="text-center">
+                    <p class="text-xs text-gray-500 mb-1">Sales (30d)</p>
+                    <p class="text-lg font-bold text-gray-900">{{ advice.product.sales_30d }}</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-xs text-gray-500 mb-1">Price</p>
+                    <p class="text-lg font-bold text-gray-900">{{ advice.product.price|floatformat:0 }} ₽</p>
+                </div>
+            </div>
+
+            <!-- AI Advice Text -->
+            <div class="bg-white rounded-lg p-4 border-l-4 border-purple-600">
+                <div class="flex items-start">
+                    <i data-lucide="message-square" class="w-5 h-5 text-purple-600 mr-3 mt-0.5 flex-shrink-0"></i>
+                    <div class="flex-1">
+                        <p class="text-sm text-gray-500 mb-1 font-medium">AI Recommendation:</p>
+                        <p class="text-gray-800 leading-relaxed">{{ advice.advice_text }}</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Related Alert (if exists) -->
+            {% if advice.alert %}
+            <div class="mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                <div class="flex items-center text-sm">
+                    <i data-lucide="alert-circle" class="w-4 h-4 text-orange-600 mr-2"></i>
+                    <span class="text-orange-800 font-medium">Related Alert: </span>
+                    <span class="text-orange-700 ml-1">{{ advice.alert.get_alert_type_display }}</span>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Actions -->
+            <div class="mt-4 flex justify-end gap-3">
+                <button onclick="markAsShown({{ advice.id }})" class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors">
+                    Mark as Shown
+                </button>
+                <button onclick="applyAdvice({{ advice.id }})" class="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 transition-colors">
+                    <i data-lucide="check" class="w-4 h-4 inline-block mr-1"></i>
+                    Apply
+                </button>
+                <button onclick="ignoreAdvice({{ advice.id }})" class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors">
+                    <i data-lucide="x" class="w-4 h-4 inline-block mr-1"></i>
+                    Ignore
+                </button>
+            </div>
+        </div>
+    </div>
+    {% empty %}
+    <div class="bg-white rounded-lg shadow p-12 text-center">
+        <i data-lucide="brain" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
+        <h3 class="text-lg font-medium text-gray-900 mb-2">No AI recommendations yet</h3>
+        <p class="text-gray-500">Run data refresh to generate AI-powered business advice for your products.</p>
+        <a href="{% url 'dashboard:refresh' %}" class="mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700">
+            <i data-lucide="refresh-cw" class="w-4 h-4 mr-2"></i>
+            Generate Advice
+        </a>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Pagination -->
+{% if page_obj.has_other_pages %}
+<div class="mt-6 bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6 rounded-lg shadow">
+    <div class="flex-1 flex justify-between sm:hidden">
+        {% if page_obj.has_previous %}
+        <a href="?page={{ page_obj.previous_page_number }}" class="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            Previous
+        </a>
+        {% endif %}
+        {% if page_obj.has_next %}
+        <a href="?page={{ page_obj.next_page_number }}" class="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            Next
+        </a>
+        {% endif %}
+    </div>
+    <div class="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+        <div>
+            <p class="text-sm text-gray-700">
+                Showing <span class="font-medium">{{ page_obj.start_index }}</span> to <span class="font-medium">{{ page_obj.end_index }}</span>
+                of <span class="font-medium">{{ page_obj.paginator.count }}</span> results
+            </p>
+        </div>
+        <div>
+            <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+                {% if page_obj.has_previous %}
+                <a href="?page={{ page_obj.previous_page_number }}" class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">
+                    <i data-lucide="chevron-left" class="w-5 h-5"></i>
+                </a>
+                {% endif %}
+                
+                {% for num in page_obj.paginator.page_range %}
+                {% if page_obj.number == num %}
+                <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-blue-50 text-sm font-medium text-blue-600">{{ num }}</span>
+                {% elif num > page_obj.number|add:'-3' and num < page_obj.number|add:'3' %}
+                <a href="?page={{ num }}" class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50">{{ num }}</a>
+                {% endif %}
+                {% endfor %}
+                
+                {% if page_obj.has_next %}
+                <a href="?page={{ page_obj.next_page_number }}" class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">
+                    <i data-lucide="chevron-right" class="w-5 h-5"></i>
+                </a>
+                {% endif %}
+            </nav>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+function markAsShown(adviceId) {
+    // TODO: Implement AJAX call to update status
+    console.log('Mark as shown:', adviceId);
+    alert('Feature coming soon: Mark as shown');
+}
+
+function applyAdvice(adviceId) {
+    // TODO: Implement AJAX call to update status
+    console.log('Apply advice:', adviceId);
+    alert('Feature coming soon: Apply advice');
+}
+
+function ignoreAdvice(adviceId) {
+    // TODO: Implement AJAX call to update status
+    console.log('Ignore advice:', adviceId);
+    if (confirm('Are you sure you want to ignore this advice?')) {
+        alert('Feature coming soon: Ignore advice');
+    }
+}
+</script>
+{% endblock %}
+

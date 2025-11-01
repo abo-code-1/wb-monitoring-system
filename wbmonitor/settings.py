@@ -140,3 +140,6 @@ CACHES = {
 LOGIN_URL = '/admin/login/'
 LOGIN_REDIRECT_URL = '/dashboard/'
 
+# Gemini AI API Key
+GEMINI_API_KEY = 'AIzaSyD3VnCxv5BKJTe373cEJCaEbgsCOUX-p7Y'
+

@@ -8,7 +8,7 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.contrib import messages
 from typing import List, Dict, Any, Optional
-from dashboard.models import WBToken, Competitor, Settings
+from dashboard.models import WBToken, Competitor, Settings, BusinessAlert, AIAdvice
 from dashboard.services import get_dashboard_data
 from dashboard.utils import safe_str, safe_int, safe_float
 
@@ -134,15 +134,9 @@ def reports_view(request):
 @login_required
 def alerts_view(request):
     """
-    Alerts view showing all products with alerts.
+    Alerts view showing all business alerts.
     """
-    data = get_dashboard_data(request.user)
-    
-    # Filter items with alerts
-    alerted_items = [item for item in data if item.get('alerts')]
-    
-    # Sort by number of alerts (descending)
-    alerted_items.sort(key=lambda x: len(x.get('alerts', [])), reverse=True)
+    alerts = BusinessAlert.objects.filter(user=request.user, is_active=True)
     
     # Pagination
     try:
@@ -151,17 +145,44 @@ def alerts_view(request):
     except Settings.DoesNotExist:
         items_per_page = 50
     
-    paginator = Paginator(alerted_items, items_per_page)
+    paginator = Paginator(alerts, items_per_page)
     page_number = request.GET.get('page', 1)
     page_obj = paginator.get_page(page_number)
     
     context = {
         'page_obj': page_obj,
-        'data': page_obj.object_list,
-        'total_alerts': len(alerted_items),
+        'alerts': page_obj.object_list,
+        'total_alerts': alerts.count(),
     }
     
     return render(request, 'dashboard/alerts.html', context)
+
+
+@login_required
+def ai_advice_view(request):
+    """
+    AI Advice view showing AI-generated recommendations.
+    """
+    advice_list = AIAdvice.objects.filter(user=request.user, status__in=['NEW', 'SHOWN'])
+    
+    # Pagination
+    try:
+        settings = Settings.objects.get(user=request.user)
+        items_per_page = settings.items_per_page
+    except Settings.DoesNotExist:
+        items_per_page = 50
+    
+    paginator = Paginator(advice_list, items_per_page)
+    page_number = request.GET.get('page', 1)
+    page_obj = paginator.get_page(page_number)
+    
+    context = {
+        'page_obj': page_obj,
+        'advice_list': page_obj.object_list,
+        'total_advice': advice_list.count(),
+    }
+    
+    return render(request, 'dashboard/ai_advice.html', context)
 
 
 @login_required
@@ -318,4 +339,26 @@ def api_refresh_view(request):
     cache.delete(f"dashboard_data_{request.user.id}")
     
     return JsonResponse({'status': 'success', 'message': 'Cache cleared. Data will refresh on next page load.'})
+
+
+@login_required
+def refresh_view(request):
+    """
+    Refresh data view - triggers data refresh and alert/advice generation.
+    """
+    from django.core.cache import cache
+    from dashboard.services import generate_business_alerts, generate_ai_advice
+    
+    # Clear cache
+    cache.delete(f"dashboard_data_{request.user.id}")
+    
+    # Generate alerts and AI advice
+    try:
+        alerts_count = generate_business_alerts(request.user)
+        advice_count = generate_ai_advice(request.user)
+        messages.success(request, f"Data refreshed! Generated {alerts_count} alerts and {advice_count} AI recommendations.")
+    except Exception as e:
+        messages.error(request, f"Error refreshing data: {str(e)}")
+    
+    return redirect('dashboard:dashboard')
 
